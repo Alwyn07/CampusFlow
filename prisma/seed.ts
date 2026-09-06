@@ -1,3 +1,6 @@
+import { PrismaPg } from "@prisma/adapter-pg";
+import bcrypt from "bcrypt";
+import { Pool } from "pg";
 import {
   AuditAction,
   ExamStatus,
@@ -9,18 +12,60 @@ import {
   UserStatus,
 } from "@prisma/client";
 
-const prisma = new PrismaClient();
+const SALT_ROUNDS = 12;
+const DEV_PASSWORDS = {
+  admin: "Admin@123",
+  faculty: "Faculty@123",
+  student: "Student@123",
+} as const;
+
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error("DATABASE_URL is required to seed the database.");
+}
+
+function resolveSslOptions(
+  connectionString: string,
+): { rejectUnauthorized: boolean } | undefined {
+  const lower = connectionString.toLowerCase();
+
+  if (lower.includes("sslmode=disable")) return undefined;
+  if (lower.includes("sslmode=no-verify")) return { rejectUnauthorized: false };
+  if (lower.includes("sslmode=require") || lower.includes("sslmode=prefer")) {
+    return { rejectUnauthorized: false };
+  }
+  if (lower.includes("sslmode=verify-ca") || lower.includes("sslmode=verify-full")) {
+    return undefined;
+  }
+
+  const host = connectionString.match(/@([^:/]+)/)?.[1]?.toLowerCase();
+  const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1";
+
+  return isLocal ? undefined : { rejectUnauthorized: false };
+}
+
+const pool = new Pool({
+  connectionString,
+  ssl: resolveSslOptions(connectionString),
+});
+const adapter = new PrismaPg(pool);
+const prisma = new PrismaClient({ adapter });
 
 async function main() {
+  const adminPasswordHash = await bcrypt.hash(DEV_PASSWORDS.admin, SALT_ROUNDS);
+  const facultyPasswordHash = await bcrypt.hash(DEV_PASSWORDS.faculty, SALT_ROUNDS);
+  const studentPasswordHash = await bcrypt.hash(DEV_PASSWORDS.student, SALT_ROUNDS);
+
   const adminUser = await prisma.user.upsert({
     where: { email: "admin@campusflow.local" },
-    update: {},
+    update: { passwordHash: adminPasswordHash },
     create: {
       email: "admin@campusflow.local",
       name: "CampusFlow Administrator",
       role: UserRole.SUPER_ADMIN,
       status: UserStatus.ACTIVE,
-      passwordHash: "$2b$12$replace-with-real-hash-before-production",
+      passwordHash: adminPasswordHash,
       emailVerifiedAt: new Date(),
     },
   });
@@ -52,13 +97,13 @@ async function main() {
 
   const facultyUser = await prisma.user.upsert({
     where: { email: "faculty@campusflow.local" },
-    update: {},
+    update: { passwordHash: facultyPasswordHash },
     create: {
       email: "faculty@campusflow.local",
       name: "Demo Faculty",
       role: UserRole.FACULTY,
       status: UserStatus.ACTIVE,
-      passwordHash: "$2b$12$replace-with-real-hash-before-production",
+      passwordHash: facultyPasswordHash,
       emailVerifiedAt: new Date(),
     },
   });
@@ -76,13 +121,13 @@ async function main() {
 
   const studentUser = await prisma.user.upsert({
     where: { email: "student@campusflow.local" },
-    update: {},
+    update: { passwordHash: studentPasswordHash },
     create: {
       email: "student@campusflow.local",
       name: "Demo Student",
       role: UserRole.STUDENT,
       status: UserStatus.ACTIVE,
-      passwordHash: "$2b$12$replace-with-real-hash-before-production",
+      passwordHash: studentPasswordHash,
       emailVerifiedAt: new Date(),
     },
   });
@@ -256,4 +301,5 @@ main()
   })
   .finally(async () => {
     await prisma.$disconnect();
+    await pool.end();
   });
